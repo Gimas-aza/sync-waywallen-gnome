@@ -1,90 +1,12 @@
 #!/usr/bin/env bash
 # sync-waywallen-colors (GNOME Full-RGB Edition)
-# Synchronizes arbitrary HEX colors from Wallpaper Engine to Libadwaita (GTK4),
+# Synchronizes arbitrary HEX colors from Waywallen to Libadwaita (GTK4),
 # GTK3, GNOME Shell (via User Themes), and Wallust templates.
 
 set -u -o pipefail
 export LC_ALL=C.UTF-8
 export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
 umask 077
-
-WE_APPID=431960
-STEAM_FLATPAK_ID="com.valvesoftware.Steam"
-STEAM_INSTALL_TYPE="${STEAM_INSTALL_TYPE:-auto}"
-
-case "$STEAM_INSTALL_TYPE" in
-flatpak|native|auto) ;;
-*) STEAM_INSTALL_TYPE="auto" ;;
-esac
-
-detect_steam_install() {
-local d
-if [ -n "${STEAM_WE_DIR:-}" ]; then
-if [ "$STEAM_INSTALL_TYPE" = "auto" ]; then
-case "$STEAM_WE_DIR" in
-"$HOME/.var/app/$STEAM_FLATPAK_ID/"*) STEAM_INSTALL_TYPE="flatpak" ;;
-*) STEAM_INSTALL_TYPE="native" ;;
-esac
-fi
-return 0
-fi
-for d in \
-"$HOME/.var/app/$STEAM_FLATPAK_ID/data/Steam/steamapps/workshop/content/$WE_APPID" \
-"$HOME/.var/app/$STEAM_FLATPAK_ID/.steam/steam/steamapps/workshop/content/$WE_APPID" \
-"$HOME/.var/app/$STEAM_FLATPAK_ID/.local/share/Steam/steamapps/workshop/content/$WE_APPID"
-do
-if [ -d "$d" ]; then
-STEAM_INSTALL_TYPE="flatpak"
-STEAM_WE_DIR="$d"
-return 0
-fi
-done
-for d in \
-"$HOME/.steam/steam/steamapps/workshop/content/$WE_APPID" \
-"$HOME/.local/share/Steam/steamapps/workshop/content/$WE_APPID" \
-"$HOME/.steam/root/steamapps/workshop/content/$WE_APPID" \
-"$HOME/.steam/steamapps/workshop/content/$WE_APPID"
-do
-if [ -d "$d" ]; then
-STEAM_INSTALL_TYPE="native"
-STEAM_WE_DIR="$d"
-return 0
-fi
-done
-if command -v flatpak >/dev/null 2>&1 && flatpak info "$STEAM_FLATPAK_ID" >/dev/null 2>&1; then
-STEAM_INSTALL_TYPE="flatpak"
-STEAM_WE_DIR="$HOME/.var/app/$STEAM_FLATPAK_ID/data/Steam/steamapps/workshop/content/$WE_APPID"
-return 0
-fi
-if command -v steam >/dev/null 2>&1 || [ -x /usr/bin/steam ] || [ -x /usr/bin/steam-native ] || [ -d "$HOME/.local/share/Steam" ]; then
-STEAM_INSTALL_TYPE="native"
-if [ -d "$HOME/.local/share/Steam" ]; then
-STEAM_WE_DIR="$HOME/.local/share/Steam/steamapps/workshop/content/$WE_APPID"
-else
-STEAM_WE_DIR="$HOME/.steam/steam/steamapps/workshop/content/$WE_APPID"
-fi
-return 0
-fi
-STEAM_INSTALL_TYPE="native"
-STEAM_WE_DIR="$HOME/.steam/steam/steamapps/workshop/content/$WE_APPID"
-return 0
-}
-
-if [ "$STEAM_INSTALL_TYPE" = "auto" ]; then
-detect_steam_install
-fi
-
-if [ -z "${STEAM_WE_DIR:-}" ]; then
-case "$STEAM_INSTALL_TYPE" in
-flatpak)
-STEAM_WE_DIR="$HOME/.var/app/$STEAM_FLATPAK_ID/data/Steam/steamapps/workshop/content/$WE_APPID"
-;;
-*)
-STEAM_INSTALL_TYPE="native"
-STEAM_WE_DIR="$HOME/.steam/steam/steamapps/workshop/content/$WE_APPID"
-;;
-esac
-fi
 
 # Paths & GNOME Configuration
 GTK4_DIR="${GTK4_DIR:-$HOME/.config/gtk-4.0}"
@@ -99,7 +21,6 @@ APPLY_GTK_CSS="${APPLY_GTK_CSS:-1}"
 APPLY_SHELL_CSS="${APPLY_SHELL_CSS:-1}"
 LIVE_RELOAD_GTK="${LIVE_RELOAD_GTK:-0}"
 
-RECENT_MINUTES="${RECENT_MINUTES:-2}"
 MAXPX="${MAXPX:-256}"
 FORCE=0
 WALLUST_TEMPLATES="${WALLUST_TEMPLATES:-0}"
@@ -107,8 +28,6 @@ WALLUST_TEMPLATES="${WALLUST_TEMPLATES:-0}"
 # Style parameters
 TINT_STRENGTH="${TINT_STRENGTH:-0.85}"
 TINT_CAP="${TINT_CAP:-0.50}"
-BG_LUM="${BG_LUM:-0.09}"
-SEL_LIFT="${SEL_LIFT:-0.12}"
 
 if [ "${1:-}" = "--force" ] || [ "${1:-}" = "-f" ]; then
 FORCE=1
@@ -117,17 +36,12 @@ fi
 
 MANUAL_TARGET="${1:-}"
 
-case "$RECENT_MINUTES" in ''|*[!0-9]*) RECENT_MINUTES=2 ;; esac
-[ "$RECENT_MINUTES" -lt 1 ] && RECENT_MINUTES=1
-
 case "$MAXPX" in ''|*[!0-9]*) MAXPX=256 ;; esac
 [ "$MAXPX" -lt 64 ] && MAXPX=64
 [ "$MAXPX" -gt 1000 ] && MAXPX=1000
 
 case "$TINT_STRENGTH" in ''|*[!0-9.]*) TINT_STRENGTH=0.85 ;; esac
 case "$TINT_CAP" in ''|*[!0-9.]*) TINT_CAP=0.50 ;; esac
-case "$BG_LUM" in ''|*[!0-9.]*) BG_LUM=0.09 ;; esac
-case "$SEL_LIFT" in ''|*[!0-9.]*) SEL_LIFT=0.12 ;; esac
 
 QCOLORS="${QCOLORS:-16}"
 case "$QCOLORS" in ''|*[!0-9]*) QCOLORS=16 ;; esac
@@ -159,7 +73,6 @@ ANALYSIS="$TMP_WORK/analysis.png"
 WSYNC="$TMP_WORK/wsync.png"
 CSS_TMP="$TMP_WORK/waywallen.css"
 SHELL_TMP="$TMP_WORK/gnome-shell.css"
-SAFE_PNG="$TMP_WORK/wallust_safe.png"
 WALLUST_ERR="$TMP_WORK/wallust_last_error.log"
 LOCK_DIR_USED=0
 
@@ -265,24 +178,6 @@ done
 return 0
 }
 
-detect_running_id() {
-local lines ids cand
-lines="$(ps -eo args= 2>/dev/null | grep -i "$WE_APPID" | grep -v grep || true)"
-[ -n "$lines" ] || return 1
-ids="$(printf '%s\n' "$lines" | grep -oE "$WE_APPID/[0-9]{6,}" | grep -oE '[0-9]{6,}$' | sort -u || true)"
-if [ -z "$ids" ]; then
-ids="$(printf '%s\n' "$lines" | grep -oE '[0-9]{10}' | sort -u || true)"
-fi
-while IFS= read -r cand; do
-[ -n "$cand" ] || continue
-if [ -d "$STEAM_WE_DIR/$cand" ]; then
-printf '%s' "$cand"
-return 0
-fi
-done <<< "$ids"
-return 1
-}
-
 detect_session_display() {
 if [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ] && { [ -n "${WAYLAND_DISPLAY:-}" ] || [ -n "${DISPLAY:-}" ]; }; then
 return 0
@@ -311,7 +206,6 @@ return 0
 }
 
 IMAGE=""
-RUNNING_ID=""
 
 if [ -z "$MANUAL_TARGET" ]; then
 IMAGE="$(python3 "$(dirname "${BASH_SOURCE[0]}")/waywallen-current.py" "$TMP_WORK/scheme.ppm")" || exit 1
@@ -328,26 +222,6 @@ elif [ -e "$MANUAL_TARGET" ]; then
 IMAGE="$(normalize_path "$MANUAL_TARGET")"
 fi
 [ -n "$IMAGE" ] || { err "Invalid image argument: $MANUAL_TARGET"; exit 1; }
-fi
-
-if [ -z "$IMAGE" ]; then
-RUNNING_ID="$(detect_running_id || true)"
-if [ -n "$RUNNING_ID" ]; then
-while IFS= read -r -d '' f; do
-IMAGE="$f"
-log "Background detected by active process (ID: $RUNNING_ID)"
-break
-done < <(find "$STEAM_WE_DIR/$RUNNING_ID" -maxdepth 2 -type f \( -iname 'preview.png' -o -iname 'preview.jpg' -o -iname 'preview.gif' \) -print0 2>/dev/null)
-fi
-fi
-
-if [ -z "$IMAGE" ]; then
-while IFS= read -r entry; do
-[ -n "$entry" ] || continue
-IMAGE="${entry#* }"
-log "Background detected by recent modification: $IMAGE"
-break
-done < <(find "$STEAM_WE_DIR" -maxdepth 2 -type f \( -iname 'preview.png' -o -iname 'preview.jpg' -o -iname 'preview.gif' \) -mmin "-$RECENT_MINUTES" -printf '%T@ %p\n' 2>/dev/null | sort -nr)
 fi
 
 if [ -z "$IMAGE" ] || [ ! -f "$IMAGE" ] || [ ! -r "$IMAGE" ]; then
@@ -516,8 +390,7 @@ PYCSS
 fi
 
 GNOME_ACCENT_PRESET="$(awk \
--v hp="$HP" -v sp="$SP_ADJ" -v hn="$HN" -v sn="$SN_ADJ" \
--v bgl="$BG_LUM" -v sellift="$SEL_LIFT" \
+-v hp="$HP" -v sp="$SP_ADJ" \
 -v out_gtk="$CSS_TMP" -v out_shell="$SHELL_TMP" -v seed="$PHEX" -v base_shell="$TMP_WORK/shell-base.css" '
 function h2r(p,q,t){ if(t<0)t+=1; if(t>1)t-=1; if(t<1/6)return p+(q-p)*6*t; if(t<1/2)return q; if(t<2/3)return p+(q-p)*(2/3-t)*6; return p }
 function hexcol(h,s,l,   q,p,r,g,b){
@@ -549,10 +422,6 @@ return "pink";
 }
 BEGIN{
 ACCENT    = hexcol(hp, sp*0.90, 0.62);
-ACCENT_BG = hexcol(hp, sp*0.85, 0.50);
-ACCENT_HOV= hexcol(hp, sp*0.85, 0.56);
-ACCENT_FG = "#ffffff";
-
 ACCENT_BG = tolower(seed);
 # Choose black or white text using relative luminance.
 hex = substr(ACCENT_BG, 2);
@@ -617,7 +486,6 @@ fi
 [ "$SCHEME_OK" -eq 1 ] || { err "Palette extraction failed; settings unchanged."; exit 1; }
 detect_session_display
 
-if [ "$SCHEME_OK" -eq 1 ]; then
 if [ "$APPLY_GTK_CSS" -eq 1 ] && [ -s "$CSS_TMP" ]; then
 install -m 644 -- "$CSS_TMP" "$GTK4_DIR/$GTK_COLOR_FILE" || exit 1
 # GTK3 cannot parse GTK4 custom properties.
@@ -634,7 +502,6 @@ fi
 if [ "$APPLY_SHELL_CSS" -eq 1 ] && [ -s "$SHELL_TMP" ]; then
 install -m 644 -- "$SHELL_TMP" "$SHELL_CSS_FILE" || exit 1
 chmod 644 -- "$SHELL_CSS_FILE" 2>/dev/null || true
-fi
 fi
 
 python3 - "$PHEX" <<'PY' || exit 1
@@ -717,7 +584,6 @@ done <<< "$swatches"
 
 sync_wallust_templates() {
 [ "$WALLUST_TEMPLATES" = "1" ] || return 0
-[ "$SCHEME_OK" -eq 1 ] || return 0
 if [ -z "$WALLUST_BIN" ] || [ ! -x "$WALLUST_BIN" ]; then
 return 0
 fi

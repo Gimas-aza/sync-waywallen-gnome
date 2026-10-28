@@ -60,7 +60,8 @@ with tempfile.TemporaryDirectory() as folder:
     settings = base / '.local/bin/gsettings'
     settings.write_text('#!/bin/sh\nexit 0\n')
     settings.chmod(0o755)
-    env = dict(os.environ, HOME=str(base), XDG_RUNTIME_DIR=str(base), WALLUST_TEMPLATES='0')
+    env = dict(os.environ, HOME=str(base), XDG_RUNTIME_DIR=str(base),
+               WAYWALLEN_BASE=str(base), WALLUST_TEMPLATES='0')
     run = lambda *args: subprocess.run(['bash', str(ROOT / 'sync-waywallen-colors'), *args],
                                       env=env, text=True, capture_output=True)
     first = run(str(image))
@@ -94,7 +95,12 @@ with tempfile.TemporaryDirectory() as folder:
                 'p.connect("parsing-error",lambda *args: errors.append(str(args[-1])));'
                 'p.load_from_path('+repr(str(path))+');assert not errors,errors')
         subprocess.run(['/usr/bin/python3', '-c', code], check=True)
+    assert run().returncode != 0, 'Missing selection must not fall back to another wallpaper'
+    assert gtk4.read_bytes() == previous
     config.write_text('[global]\nlast_wallpaper="222"\n')
+    automatic = run('--force')
+    assert automatic.returncode == 0, automatic.stdout + automatic.stderr
+    assert accent.read_text() == '#336699\n'
     for name, code in {
         'systemctl': '#!/bin/sh\ncase "$*" in *waywallen-settings.service*)\ncase "$*" in *restart*|*start*) touch "$HOME/settings-started";; *is-active*) test -f "$HOME/settings-started"; exit $?;; *stop*) rm -f "$HOME/settings-started";; esac;;\n*xdg-desktop-portal.service*) exit 0;;\n*is-active*|*is-enabled*) test -f "$HOME/service-started"; exit $?;; *enable*) touch "$HOME/service-started";; esac\nexit 0\n',
         'gsettings': '#!/bin/sh\nif [ "$1" = get ]; then\ncase "$3" in enabled-extensions|disabled-extensions) echo "@as []";; *) echo "\\x27blue\\x27";; esac\nfi\nexit 0\n',
@@ -103,7 +109,7 @@ with tempfile.TemporaryDirectory() as folder:
         target = base / '.local/bin' / name
         target.write_text(code)
         target.chmod(0o755)
-    env.update(PATH=str(base / '.local/bin') + ':' + os.environ['PATH'], WAYWALLEN_BASE=str(base))
+    env.update(PATH=str(base / '.local/bin') + ':' + os.environ['PATH'])
     firefox_user.write_bytes(personal_settings + b'// BEGIN Waywallen accent\n'
                              b'user_pref("ui.accentcolor", "#4477aa");\n'
                              b'user_pref("ui.highlight", "#4477aa");\n// END Waywallen accent\n')

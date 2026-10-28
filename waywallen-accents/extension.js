@@ -65,7 +65,6 @@ export default class WaywallenAccents extends Extension {
             this._theme = theme;
             this._loaded = !applicationAccent;
             this._context.set_theme(theme);
-            console.log('Waywallen Accents: refreshed Shell accent theme');
         } catch (error) {
             console.error(`Waywallen Accents: ${error.message}`);
         } finally {
@@ -80,7 +79,6 @@ export default class WaywallenAccents extends Extension {
         const waywallen = Main.extensionManager.lookup('org.waywallen.gnome@waywallen.io');
         if (waywallen?.stateObj?._override) {
             waywallen.stateObj._override._reloadBackgrounds();
-            console.log('Waywallen Accents: reattached live wallpaper backgrounds');
         }
     }
 
