@@ -1,0 +1,14 @@
+[Unit]
+Description=Waywallen colors for GNOME
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/bash %h/.local/bin/watch-waywallen.sh
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+
+[Install]
+WantedBy=graphical-session.target

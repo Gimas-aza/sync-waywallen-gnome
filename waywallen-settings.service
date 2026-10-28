@@ -1,0 +1,12 @@
+[Unit]
+Description=Exact Waywallen accent for the GNOME Settings portal
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=dbus
+BusName=org.freedesktop.impl.portal.desktop.waywallen
+ExecStart=/usr/bin/python3 %h/.local/bin/waywallen-settings.py
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true

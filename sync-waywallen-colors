@@ -1,0 +1,746 @@
+#!/usr/bin/env bash
+# sync-waywallen-colors (GNOME Full-RGB Edition)
+# Synchronizes arbitrary HEX colors from Wallpaper Engine to Libadwaita (GTK4),
+# GTK3, GNOME Shell (via User Themes), and Wallust templates.
+
+set -u -o pipefail
+export LC_ALL=C.UTF-8
+export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
+umask 077
+
+WE_APPID=431960
+STEAM_FLATPAK_ID="com.valvesoftware.Steam"
+STEAM_INSTALL_TYPE="${STEAM_INSTALL_TYPE:-auto}"
+
+case "$STEAM_INSTALL_TYPE" in
+flatpak|native|auto) ;;
+*) STEAM_INSTALL_TYPE="auto" ;;
+esac
+
+detect_steam_install() {
+local d
+if [ -n "${STEAM_WE_DIR:-}" ]; then
+if [ "$STEAM_INSTALL_TYPE" = "auto" ]; then
+case "$STEAM_WE_DIR" in
+"$HOME/.var/app/$STEAM_FLATPAK_ID/"*) STEAM_INSTALL_TYPE="flatpak" ;;
+*) STEAM_INSTALL_TYPE="native" ;;
+esac
+fi
+return 0
+fi
+for d in \
+"$HOME/.var/app/$STEAM_FLATPAK_ID/data/Steam/steamapps/workshop/content/$WE_APPID" \
+"$HOME/.var/app/$STEAM_FLATPAK_ID/.steam/steam/steamapps/workshop/content/$WE_APPID" \
+"$HOME/.var/app/$STEAM_FLATPAK_ID/.local/share/Steam/steamapps/workshop/content/$WE_APPID"
+do
+if [ -d "$d" ]; then
+STEAM_INSTALL_TYPE="flatpak"
+STEAM_WE_DIR="$d"
+return 0
+fi
+done
+for d in \
+"$HOME/.steam/steam/steamapps/workshop/content/$WE_APPID" \
+"$HOME/.local/share/Steam/steamapps/workshop/content/$WE_APPID" \
+"$HOME/.steam/root/steamapps/workshop/content/$WE_APPID" \
+"$HOME/.steam/steamapps/workshop/content/$WE_APPID"
+do
+if [ -d "$d" ]; then
+STEAM_INSTALL_TYPE="native"
+STEAM_WE_DIR="$d"
+return 0
+fi
+done
+if command -v flatpak >/dev/null 2>&1 && flatpak info "$STEAM_FLATPAK_ID" >/dev/null 2>&1; then
+STEAM_INSTALL_TYPE="flatpak"
+STEAM_WE_DIR="$HOME/.var/app/$STEAM_FLATPAK_ID/data/Steam/steamapps/workshop/content/$WE_APPID"
+return 0
+fi
+if command -v steam >/dev/null 2>&1 || [ -x /usr/bin/steam ] || [ -x /usr/bin/steam-native ] || [ -d "$HOME/.local/share/Steam" ]; then
+STEAM_INSTALL_TYPE="native"
+if [ -d "$HOME/.local/share/Steam" ]; then
+STEAM_WE_DIR="$HOME/.local/share/Steam/steamapps/workshop/content/$WE_APPID"
+else
+STEAM_WE_DIR="$HOME/.steam/steam/steamapps/workshop/content/$WE_APPID"
+fi
+return 0
+fi
+STEAM_INSTALL_TYPE="native"
+STEAM_WE_DIR="$HOME/.steam/steam/steamapps/workshop/content/$WE_APPID"
+return 0
+}
+
+if [ "$STEAM_INSTALL_TYPE" = "auto" ]; then
+detect_steam_install
+fi
+
+if [ -z "${STEAM_WE_DIR:-}" ]; then
+case "$STEAM_INSTALL_TYPE" in
+flatpak)
+STEAM_WE_DIR="$HOME/.var/app/$STEAM_FLATPAK_ID/data/Steam/steamapps/workshop/content/$WE_APPID"
+;;
+*)
+STEAM_INSTALL_TYPE="native"
+STEAM_WE_DIR="$HOME/.steam/steam/steamapps/workshop/content/$WE_APPID"
+;;
+esac
+fi
+
+# Paths & GNOME Configuration
+GTK4_DIR="${GTK4_DIR:-$HOME/.config/gtk-4.0}"
+GTK3_DIR="${GTK3_DIR:-$HOME/.config/gtk-3.0}"
+GTK_COLOR_FILE="waywallen-colors.css"
+
+SHELL_THEME_NAME="${SHELL_THEME_NAME:-Waywallen}"
+SHELL_THEME_DIR="$HOME/.local/share/themes/$SHELL_THEME_NAME/gnome-shell"
+SHELL_CSS_FILE="$SHELL_THEME_DIR/gnome-shell.css"
+
+APPLY_GTK_CSS="${APPLY_GTK_CSS:-1}"
+APPLY_SHELL_CSS="${APPLY_SHELL_CSS:-1}"
+LIVE_RELOAD_GTK="${LIVE_RELOAD_GTK:-0}"
+
+RECENT_MINUTES="${RECENT_MINUTES:-2}"
+MAXPX="${MAXPX:-256}"
+FORCE=0
+WALLUST_TEMPLATES="${WALLUST_TEMPLATES:-0}"
+
+# Style parameters
+TINT_STRENGTH="${TINT_STRENGTH:-0.85}"
+TINT_CAP="${TINT_CAP:-0.50}"
+BG_LUM="${BG_LUM:-0.09}"
+SEL_LIFT="${SEL_LIFT:-0.12}"
+
+if [ "${1:-}" = "--force" ] || [ "${1:-}" = "-f" ]; then
+FORCE=1
+shift
+fi
+
+MANUAL_TARGET="${1:-}"
+
+case "$RECENT_MINUTES" in ''|*[!0-9]*) RECENT_MINUTES=2 ;; esac
+[ "$RECENT_MINUTES" -lt 1 ] && RECENT_MINUTES=1
+
+case "$MAXPX" in ''|*[!0-9]*) MAXPX=256 ;; esac
+[ "$MAXPX" -lt 64 ] && MAXPX=64
+[ "$MAXPX" -gt 1000 ] && MAXPX=1000
+
+case "$TINT_STRENGTH" in ''|*[!0-9.]*) TINT_STRENGTH=0.85 ;; esac
+case "$TINT_CAP" in ''|*[!0-9.]*) TINT_CAP=0.50 ;; esac
+case "$BG_LUM" in ''|*[!0-9.]*) BG_LUM=0.09 ;; esac
+case "$SEL_LIFT" in ''|*[!0-9.]*) SEL_LIFT=0.12 ;; esac
+
+QCOLORS="${QCOLORS:-16}"
+case "$QCOLORS" in ''|*[!0-9]*) QCOLORS=16 ;; esac
+[ "$QCOLORS" -lt 4 ] && QCOLORS=4
+[ "$QCOLORS" -gt 64 ] && QCOLORS=64
+
+UID_NUM="$(id -u 2>/dev/null || echo 0)"
+RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp}"
+if [ ! -d "$RUNTIME_DIR" ] || [ ! -w "$RUNTIME_DIR" ]; then
+RUNTIME_DIR=/tmp
+fi
+
+STATE_CACHE="$RUNTIME_DIR/waywallen_last_applied_image_wallust.$UID_NUM"
+LOCK_FILE="$RUNTIME_DIR/waywallen_colors.lock.$UID_NUM"
+STATE_TMP=""
+
+log() { echo "[sync] $*"; }
+err() { echo "[sync][ERROR] $*" >&2; }
+
+TMP_WORK="$(mktemp -d "${TMPDIR:-/tmp}/waywallen.XXXXXX" 2>/dev/null || true)"
+if [ -z "$TMP_WORK" ] || [ ! -d "$TMP_WORK" ]; then
+err "Failed to create temporary directory."
+exit 1
+fi
+
+TEMP_FRAME="$TMP_WORK/preview_frame.png"
+FRAMES_DIR="$TMP_WORK/gframes"
+ANALYSIS="$TMP_WORK/analysis.png"
+WSYNC="$TMP_WORK/wsync.png"
+CSS_TMP="$TMP_WORK/waywallen.css"
+SHELL_TMP="$TMP_WORK/gnome-shell.css"
+SAFE_PNG="$TMP_WORK/wallust_safe.png"
+WALLUST_ERR="$TMP_WORK/wallust_last_error.log"
+LOCK_DIR_USED=0
+
+cleanup() {
+rm -rf -- "$TMP_WORK" 2>/dev/null || true
+if [ -n "${STATE_TMP:-}" ]; then
+rm -f -- "$STATE_TMP" 2>/dev/null || true
+fi
+if [ "$LOCK_DIR_USED" = "1" ]; then
+rm -f -- "${LOCK_FILE}.d/pid" 2>/dev/null || true
+rmdir -- "${LOCK_FILE}.d" 2>/dev/null || true
+fi
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# ---------------------------------------------------------------
+# Lock mechanism
+# ---------------------------------------------------------------
+if command -v flock >/dev/null 2>&1; then
+exec 9>"$LOCK_FILE" || { err "Failed to open lock file."; exit 1; }
+if ! flock -x -w 30 9; then
+log "Another instance is active; lock timeout."
+exit 0
+fi
+else
+LOCK_DIR="${LOCK_FILE}.d"
+i=0
+until mkdir -- "$LOCK_DIR" 2>/dev/null; do
+if [ -e "$LOCK_DIR" ] && [ ! -d "$LOCK_DIR" ]; then
+rm -f -- "$LOCK_DIR" 2>/dev/null || true
+fi
+old_pid="$(cat -- "$LOCK_DIR/pid" 2>/dev/null || true)"
+if [ -n "$old_pid" ] && ! kill -0 -- "$old_pid" 2>/dev/null; then
+rm -f -- "$LOCK_DIR/pid" 2>/dev/null || true
+rmdir -- "$LOCK_DIR" 2>/dev/null || true
+continue
+fi
+i=$((i + 1))
+if [ "$i" -gt 60 ]; then
+log "Another instance is running; exiting."
+exit 0
+fi
+sleep 0.5
+done
+echo "$$" > "$LOCK_DIR/pid"
+LOCK_DIR_USED=1
+fi
+
+mkdir -p -- "$GTK4_DIR" "$GTK3_DIR" "$SHELL_THEME_DIR" || exit 1
+
+MAGICK_BIN=""
+if command -v magick >/dev/null 2>&1; then
+MAGICK_BIN="magick"
+elif command -v convert >/dev/null 2>&1; then
+MAGICK_BIN="convert"
+fi
+
+WALLUST_BIN="$(command -v wallust 2>/dev/null || true)"
+if [ -z "$WALLUST_BIN" ] && [ -x "$HOME/.cargo/bin/wallust" ]; then
+WALLUST_BIN="$HOME/.cargo/bin/wallust"
+fi
+
+normalize_path() {
+local p="$1" out=""
+out="$(readlink -f -- "$p" 2>/dev/null || true)"
+if [ -n "$out" ]; then
+printf '%s' "$out"
+else
+printf '%s' "$p"
+fi
+}
+
+make_hash() {
+local f="$1" h=""
+[ -f "$f" ] && [ -r "$f" ] || return 1
+if command -v sha256sum >/dev/null 2>&1; then
+h="$(sha256sum -- "$f" 2>/dev/null | awk '{print $1}')"
+elif command -v shasum >/dev/null 2>&1; then
+h="$(shasum -a 256 -- "$f" 2>/dev/null | awk '{print $1}')"
+elif command -v openssl >/dev/null 2>&1; then
+h="$(openssl dgst -sha256 "$f" 2>/dev/null | awk '{print $NF}')"
+elif command -v md5sum >/dev/null 2>&1; then
+h="$(md5sum -- "$f" 2>/dev/null | awk '{print $1}')"
+fi
+if [ -z "$h" ]; then
+h="stat-$(stat -c '%s-%Y-%i' -- "$f" 2>/dev/null || stat -f '%z-%m-%i' -- "$f" 2>/dev/null || echo unknown)"
+fi
+printf '%s' "$h"
+}
+
+wait_file_stable() {
+local f="$1" i s1 s2
+for i in 1 2 3 4 5 6; do
+s1="$(stat -c '%s %Y' -- "$f" 2>/dev/null || stat -f '%z %m' -- "$f" 2>/dev/null || echo '0 0')"
+sleep 0.4
+s2="$(stat -c '%s %Y' -- "$f" 2>/dev/null || stat -f '%z %m' -- "$f" 2>/dev/null || echo '0 0')"
+if [ "$s1" = "$s2" ] && [ "${s1%% *}" -gt 0 ]; then
+return 0
+fi
+done
+return 0
+}
+
+detect_running_id() {
+local lines ids cand
+lines="$(ps -eo args= 2>/dev/null | grep -i "$WE_APPID" | grep -v grep || true)"
+[ -n "$lines" ] || return 1
+ids="$(printf '%s\n' "$lines" | grep -oE "$WE_APPID/[0-9]{6,}" | grep -oE '[0-9]{6,}$' | sort -u || true)"
+if [ -z "$ids" ]; then
+ids="$(printf '%s\n' "$lines" | grep -oE '[0-9]{10}' | sort -u || true)"
+fi
+while IFS= read -r cand; do
+[ -n "$cand" ] || continue
+if [ -d "$STEAM_WE_DIR/$cand" ]; then
+printf '%s' "$cand"
+return 0
+fi
+done <<< "$ids"
+return 1
+}
+
+detect_session_display() {
+if [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ] && { [ -n "${WAYLAND_DISPLAY:-}" ] || [ -n "${DISPLAY:-}" ]; }; then
+return 0
+fi
+local proc pid src line
+for proc in gnome-shell gsd-color xdg-desktop-portal-gnome; do
+pid="$(pgrep -u "$UID_NUM" -x "$proc" 2>/dev/null | head -n 1)"
+[ -n "$pid" ] || continue
+src="/proc/$pid/environ"
+[ -r "$src" ] || continue
+while IFS= read -r line; do
+case "$line" in
+WAYLAND_DISPLAY=*|DISPLAY=*|XDG_SESSION_TYPE=*|DBUS_SESSION_BUS_ADDRESS=*)
+export "$line" 2>/dev/null || true
+;;
+esac
+done < <(tr '\0' '\n' < "$src" 2>/dev/null)
+if [ -n "${WAYLAND_DISPLAY:-}" ] || [ -n "${DISPLAY:-}" ]; then
+break
+fi
+done
+if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ] && [ -S "/run/user/$UID_NUM/bus" ]; then
+export DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$UID_NUM/bus"
+fi
+return 0
+}
+
+IMAGE=""
+RUNNING_ID=""
+
+if [ -z "$MANUAL_TARGET" ]; then
+IMAGE="$(python3 "$(dirname "${BASH_SOURCE[0]}")/waywallen-current.py" "$TMP_WORK/scheme.ppm")" || exit 1
+fi
+
+if [ -n "$MANUAL_TARGET" ]; then
+if [ -d "$MANUAL_TARGET" ]; then
+MANUAL_DIR="$(normalize_path "$MANUAL_TARGET")"
+while IFS= read -r -d '' f; do
+IMAGE="$f"
+break
+done < <(find "$MANUAL_DIR" -maxdepth 2 -type f \( -iname 'preview.png' -o -iname 'preview.jpg' -o -iname 'preview.gif' \) -print0 2>/dev/null)
+elif [ -e "$MANUAL_TARGET" ]; then
+IMAGE="$(normalize_path "$MANUAL_TARGET")"
+fi
+[ -n "$IMAGE" ] || { err "Invalid image argument: $MANUAL_TARGET"; exit 1; }
+fi
+
+if [ -z "$IMAGE" ]; then
+RUNNING_ID="$(detect_running_id || true)"
+if [ -n "$RUNNING_ID" ]; then
+while IFS= read -r -d '' f; do
+IMAGE="$f"
+log "Background detected by active process (ID: $RUNNING_ID)"
+break
+done < <(find "$STEAM_WE_DIR/$RUNNING_ID" -maxdepth 2 -type f \( -iname 'preview.png' -o -iname 'preview.jpg' -o -iname 'preview.gif' \) -print0 2>/dev/null)
+fi
+fi
+
+if [ -z "$IMAGE" ]; then
+while IFS= read -r entry; do
+[ -n "$entry" ] || continue
+IMAGE="${entry#* }"
+log "Background detected by recent modification: $IMAGE"
+break
+done < <(find "$STEAM_WE_DIR" -maxdepth 2 -type f \( -iname 'preview.png' -o -iname 'preview.jpg' -o -iname 'preview.gif' \) -mmin "-$RECENT_MINUTES" -printf '%T@ %p\n' 2>/dev/null | sort -nr)
+fi
+
+if [ -z "$IMAGE" ] || [ ! -f "$IMAGE" ] || [ ! -r "$IMAGE" ]; then
+err "No valid preview detected."
+exit 1
+fi
+
+IMAGE="$(normalize_path "$IMAGE")"
+wait_file_stable "$IMAGE"
+
+if [ ! -s "$IMAGE" ]; then
+err "Preview is empty or still being written."
+exit 1
+fi
+
+CONTENT_HASH="$(make_hash "$IMAGE" || true)"
+PREV_HASH="$(cat -- "$STATE_CACHE" 2>/dev/null || true)"
+
+if [ "$FORCE" -eq 0 ] && [ -n "$PREV_HASH" ] && [ -n "$CONTENT_HASH" ] && [ "$PREV_HASH" = "$CONTENT_HASH" ]; then
+log "No changes (identical hash). Skipping reapplication."
+exit 0
+fi
+
+log "Processing image: $IMAGE"
+
+# ---------------------------------------------------------------
+# GIF processing: temporal median of frames
+# ---------------------------------------------------------------
+case "${IMAGE##*.}" in
+[gG][iI][fF])
+rm -f -- "$TEMP_FRAME"
+mkdir -p -- "$FRAMES_DIR" 2>/dev/null || true
+AVG_OK=0
+NFRAMES=0
+if command -v ffmpeg >/dev/null 2>&1; then
+ffmpeg -y -v error -i "$IMAGE" -vf "scale=128:128,select='not(mod(n,10))'" -vsync 0 -frames:v 8 "$FRAMES_DIR/gf_%02d.png" </dev/null 2>"$TMP_WORK/ffmpeg.err" || true
+NFRAMES="$(find "$FRAMES_DIR" -type f -name 'gf_*.png' 2>/dev/null | wc -l)"
+if [ "$NFRAMES" -ge 2 ] && [ -n "$MAGICK_BIN" ]; then
+if "$MAGICK_BIN" "$FRAMES_DIR"/gf_*.png -evaluate-sequence median -depth 8 "$TEMP_FRAME" 2>/dev/null && [ -s "$TEMP_FRAME" ]; then
+AVG_OK=1
+log "GIF processed: temporal median of $NFRAMES frames."
+fi
+fi
+if [ "$AVG_OK" -eq 0 ]; then
+ffmpeg -y -v error -ss 1 -i "$IMAGE" -frames:v 1 "$TEMP_FRAME" </dev/null 2>>"$TMP_WORK/ffmpeg.err" || true
+if [ ! -s "$TEMP_FRAME" ]; then
+ffmpeg -y -v error -i "$IMAGE" -frames:v 1 "$TEMP_FRAME" </dev/null 2>>"$TMP_WORK/ffmpeg.err" || true
+fi
+fi
+fi
+if [ ! -s "$TEMP_FRAME" ] && [ -n "$MAGICK_BIN" ]; then
+"$MAGICK_BIN" "$IMAGE[0]" "$TEMP_FRAME" 2>/dev/null || true
+fi
+if [ -s "$TEMP_FRAME" ]; then
+IMAGE="$TEMP_FRAME"
+fi
+;;
+esac
+
+# ---------------------------------------------------------------
+# Color extraction (matugen content / tonal-spot style)
+# ---------------------------------------------------------------
+HP="" ; SP="" ; HN="" ; SN="" ; PHEX="" ; NHEX=""
+SP_ADJ="" ; SN_ADJ=""
+SCHEME_OK=0
+GNOME_ACCENT_PRESET="blue"
+
+if [ -n "$MAGICK_BIN" ]; then
+if "$MAGICK_BIN" "$IMAGE[0]" -alpha off -filter box -resize "${MAXPX}x${MAXPX}>" -depth 8 "$ANALYSIS" 2>/dev/null && [ -s "$ANALYSIS" ]; then
+EXTRACT="$("$MAGICK_BIN" "$ANALYSIS" -colors "$QCOLORS" -depth 8 -format %c histogram:info: 2>/dev/null | awk '
+function hx(ch){ return index("0123456789abcdef", tolower(ch)) - 1 }
+function rgb2info(r,g,b,   mx,mn,d,h,s,l,cc){
+r/=255; g/=255; b/=255;
+mx=r; if(g>mx)mx=g; if(b>mx)mx=b;
+mn=r; if(g<mn)mn=g; if(b<mn)mn=b;
+cc=mx-mn;
+l=(mx+mn)/2;
+if(cc<0.000001){ h=0; s=0 }
+else {
+s = (l>0.5) ? cc/(2-mx-mn) : cc/(mx+mn);
+if(mx==r){ h=(g-b)/cc; if(g<b)h+=6 }
+else if(mx==g){ h=(b-r)/cc+2 }
+else { h=(r-g)/cc+4 }
+h/=6;
+}
+Hh=h; Ss=s; Lc=l; Cc=cc;
+}
+{
+c=$1; gsub(":","",c); c+=0;
+hex=$3; gsub(/^#/,"",hex);
+if (hex !~ /^[0-9A-Fa-f]+$/) next;
+if (length(hex)==8) hex=substr(hex,1,6);
+if (length(hex)!=6) next;
+nc++;
+cnt[nc]=c; hxv[nc]=hex;
+r=hx(substr(hex,1,1))*16+hx(substr(hex,2,1));
+g=hx(substr(hex,3,1))*16+hx(substr(hex,4,1));
+b=hx(substr(hex,5,1))*16+hx(substr(hex,6,1));
+rgb2info(r,g,b);
+hue[nc]=Hh; sat[nc]=Ss; lum[nc]=Lc; chr[nc]=Cc;
+}
+END{
+total=0; achr=0; maxc=0;
+for(i=1;i<=nc;i++){
+total+=cnt[i];
+achr+=cnt[i]*chr[i];
+if(cnt[i]>maxc){ maxc=cnt[i]; nhex="#" toupper(hxv[i]) }
+}
+if (total<=0) exit 1;
+achr/=total;
+minc=maxc*0.01;
+for(i=1;i<=nc;i++){
+if (chr[i]>=0.06 && lum[i]>=0.08 && lum[i]<=0.90 && cnt[i]>=minc){
+bk=int(hue[i]*16)%16;
+bcnt[bk]+=cnt[i];
+sc=cnt[i]*(0.6+chr[i]);
+if(sc>bsc[bk]){ bsc[bk]=sc; bhue[bk]=hue[i]; bsat[bk]=sat[i]; bhex[bk]=hxv[i] }
+}
+}
+winner=0; for(k=0;k<16;k++) if (bcnt[k]>bcnt[winner]) winner=k;
+if (bcnt[winner]<=0){ printf "0.000000 0.000000 0.000000 0.000000 %s %s\n", nhex, nhex; exit }
+gate=(achr>=0.22)?1.0:(achr/0.22)^1.4;
+if (gate>1) gate=1; if (gate<0.01) gate=0.01;
+hp=bhue[winner];
+sp=bsat[winner]*gate;
+if (sp>0.85) sp=0.85;
+phex="#" toupper(bhex[winner]);
+hn=bhue[winner];
+sn=achr*2.6; if (sn>0.45) sn=0.45;
+printf "%.6f %.6f %.6f %.6f %s %s\n", hp, sp, hn, sn, phex, nhex;
+}')"
+read -r HP SP HN SN PHEX NHEX <<< "$EXTRACT"
+for v in "$HP" "$SP" "$HN" "$SN"; do
+[[ "$v" =~ ^[0-9]*\.?[0-9]+$ ]] || { HP=""; break; }
+done
+fi
+fi
+
+# ---------------------------------------------------------------
+# Generate Full-HEX CSS for Libadwaita (:root + @define-color) & GNOME Shell
+# ---------------------------------------------------------------
+if [ -n "$HP" ]; then
+SN_ADJ="$(awk -v s="$SN" -v m="$TINT_STRENGTH" -v c="$TINT_CAP" 'BEGIN{ s+=0; if (s<0.03) printf "%.4f", s; else { a=s*m; if (a>c) a=c; printf "%.4f", a } }')"
+SP_ADJ="$(awk -v s="$SP" 'BEGIN{ s+=0; if (s<0.20) printf "%.4f", s; else { a=s*0.80; if (a>0.70) a=0.70; printf "%.4f", a } }')"
+
+if [ "$APPLY_SHELL_CSS" -eq 1 ]; then
+gresource extract /usr/share/gnome-shell/gnome-shell-theme.gresource \
+    /org/gnome/shell/theme/gnome-shell-dark.css > "$TMP_WORK/shell-base.css" || exit 1
+# Leave background actors and layout to Shell and wallpaper extensions.
+python3 - "$TMP_WORK/shell-base.css" <<'PYCSS' || exit 1
+from pathlib import Path
+import re
+import sys
+path = Path(sys.argv[1])
+css = re.sub(r'/\*.*?\*/', '', path.read_text(), flags=re.S)
+rules = []
+for selector, body in re.findall(r'([^{}]+)\{([^{}]*)\}', css):
+    declarations = [part.strip() for part in body.split(';')
+                    if '-st-accent-color' in part or '-st-accent-fg-color' in part]
+    if declarations:
+        rules.append(selector.strip() + ' {\n  ' + ';\n  '.join(declarations) + ';\n}\n')
+if not rules:
+    sys.exit('No accent declarations found in the installed Shell theme')
+path.write_text('\n'.join(rules))
+PYCSS
+fi
+
+GNOME_ACCENT_PRESET="$(awk \
+-v hp="$HP" -v sp="$SP_ADJ" -v hn="$HN" -v sn="$SN_ADJ" \
+-v bgl="$BG_LUM" -v sellift="$SEL_LIFT" \
+-v out_gtk="$CSS_TMP" -v out_shell="$SHELL_TMP" -v seed="$PHEX" -v base_shell="$TMP_WORK/shell-base.css" '
+function h2r(p,q,t){ if(t<0)t+=1; if(t>1)t-=1; if(t<1/6)return p+(q-p)*6*t; if(t<1/2)return q; if(t<2/3)return p+(q-p)*(2/3-t)*6; return p }
+function hexcol(h,s,l,   q,p,r,g,b){
+h+=0; s+=0; l+=0;
+if(h<0)h+=1; if(h>1)h-=1;
+if(s<0)s=0; if(s>1)s=1;
+if(l<0)l=0; if(l>1)l=1;
+if(s<=0){ r=l; g=l; b=l }
+else {
+q = (l<0.5) ? l*(1+s) : l+s-l*s;
+p = 2*l-q;
+r = h2r(p,q,h+1/3);
+g = h2r(p,q,h);
+b = h2r(p,q,h-1/3);
+}
+return sprintf("#%02x%02x%02x", int(r*255+0.5), int(g*255+0.5), int(b*255+0.5));
+}
+function map_gnome_accent(h, s,   deg){
+if (s < 0.12) return "slate";
+deg = h * 360.0;
+if (deg < 15 || deg >= 345) return "red";
+if (deg < 42) return "orange";
+if (deg < 70) return "yellow";
+if (deg < 160) return "green";
+if (deg < 200) return "teal";
+if (deg < 255) return "blue";
+if (deg < 305) return "purple";
+return "pink";
+}
+BEGIN{
+ACCENT    = hexcol(hp, sp*0.90, 0.62);
+ACCENT_BG = hexcol(hp, sp*0.85, 0.50);
+ACCENT_HOV= hexcol(hp, sp*0.85, 0.56);
+ACCENT_FG = "#ffffff";
+
+ACCENT_BG = tolower(seed);
+# Choose black or white text using relative luminance.
+hex = substr(ACCENT_BG, 2);
+for (i = 0; i < 3; i++) {
+    c = (index("0123456789abcdef", tolower(substr(hex, i*2+1, 1)))-1)*16;
+    c += index("0123456789abcdef", tolower(substr(hex, i*2+2, 1)))-1;
+    c /= 255;
+    linear[i] = c <= 0.04045 ? c/12.92 : ((c+0.055)/1.055)^2.4;
+}
+luminance = 0.2126*linear[0] + 0.7152*linear[1] + 0.0722*linear[2];
+ACCENT_FG = luminance > 0.179 ? "#000000" : "#ffffff";
+
+# 1. GTK4 / Libadwaita 1.6+ CSS Variables (:root overrides the 9-color limit!)
+printf "/* Generated automatically by sync-waywallen-colors (Full-HEX) */\n" > out_gtk;
+printf ":root {\n" > out_gtk;
+printf "  --accent-bg-color: %s;\n", ACCENT_BG > out_gtk;
+printf "  --accent-fg-color: %s;\n", ACCENT_FG > out_gtk;
+printf "}\n\n" > out_gtk;
+
+# 2. Legacy @define-color for GTK3 (adw-gtk3) and older GTK4 widgets
+printf "@define-color accent_color %s;\n", ACCENT > out_gtk;
+printf "@define-color accent_bg_color %s;\n", ACCENT_BG > out_gtk;
+printf "@define-color accent_fg_color %s;\n", ACCENT_FG > out_gtk;
+close(out_gtk);
+
+# Override only accent declarations; keep the default Shell stylesheet active.
+printf "/* Generated accent colors from wallpaper */\n" > out_shell;
+while ((getline line < base_shell) > 0) {
+    gsub(/-st-accent-fg-color/, ACCENT_FG, line);
+    gsub(/-st-accent-color/, ACCENT_BG, line);
+    print line > out_shell;
+}
+close(base_shell);
+close(out_shell);
+
+print map_gnome_accent(hp, sp);
+}' 2>/dev/null || true)"
+
+if [ -s "$CSS_TMP" ]; then
+SCHEME_OK=1
+log "Extracted exact HEX palette: accent=$PHEX (fallback preset: $GNOME_ACCENT_PRESET)"
+fi
+fi
+
+# ---------------------------------------------------------------
+# Apply GTK3, GTK4 (Libadwaita), and GNOME Shell custom HEX themes
+# ---------------------------------------------------------------
+ensure_css_import() {
+local dir="$1"
+local main_css="$dir/gtk.css"
+local import_line="@import url(\"$GTK_COLOR_FILE\");"
+touch "$main_css" 2>/dev/null || return 1
+if ! grep -Fq "$GTK_COLOR_FILE" "$main_css" 2>/dev/null; then
+local tmp_css="$dir/gtk.css.tmp.$$"
+{
+printf '%s\n' "$import_line"
+cat "$main_css"
+} > "$tmp_css" && mv -f "$tmp_css" "$main_css"
+fi
+}
+
+[ "$SCHEME_OK" -eq 1 ] || { err "Palette extraction failed; settings unchanged."; exit 1; }
+detect_session_display
+
+if [ "$SCHEME_OK" -eq 1 ]; then
+if [ "$APPLY_GTK_CSS" -eq 1 ] && [ -s "$CSS_TMP" ]; then
+install -m 644 -- "$CSS_TMP" "$GTK4_DIR/$GTK_COLOR_FILE" || exit 1
+# GTK3 cannot parse GTK4 custom properties.
+{ sed -n '/^@define-color/p' "$CSS_TMP"
+  printf '%s\n' '@define-color theme_selected_bg_color @accent_bg_color;' '@define-color theme_selected_fg_color @accent_fg_color;'
+} > "$TMP_WORK/gtk3.css"
+install -m 644 -- "$TMP_WORK/gtk3.css" "$GTK3_DIR/$GTK_COLOR_FILE" || exit 1
+chmod 644 -- "$GTK4_DIR/$GTK_COLOR_FILE" "$GTK3_DIR/$GTK_COLOR_FILE" 2>/dev/null || true
+ensure_css_import "$GTK4_DIR" || exit 1
+ensure_css_import "$GTK3_DIR" || exit 1
+log "Updated GTK-4.0 (:root + @define-color) and GTK-3.0 CSS with exact HEX colors."
+fi
+
+if [ "$APPLY_SHELL_CSS" -eq 1 ] && [ -s "$SHELL_TMP" ]; then
+install -m 644 -- "$SHELL_TMP" "$SHELL_CSS_FILE" || exit 1
+chmod 644 -- "$SHELL_CSS_FILE" 2>/dev/null || true
+fi
+fi
+
+python3 - "$PHEX" <<'PY' || exit 1
+from pathlib import Path
+import re
+import sys
+import tempfile
+
+color = sys.argv[1].lower()
+if not re.fullmatch(r'#[0-9a-f]{6}', color):
+    raise SystemExit('Invalid portal accent color')
+path = Path.home() / '.local/state/waywallen-colors/accent'
+path.parent.mkdir(parents=True, exist_ok=True)
+content = color + '\n'
+if not path.exists() or path.read_text() != content:
+    with tempfile.NamedTemporaryFile(mode='w', dir=path.parent, delete=False) as output:
+        output.write(content)
+    Path(output.name).replace(path)
+PY
+
+if command -v gsettings >/dev/null 2>&1; then
+  # 1. Keep the closest native accent as a fallback for GNOME consumers.
+if [ -n "$GNOME_ACCENT_PRESET" ] && gsettings writable org.gnome.desktop.interface accent-color >/dev/null 2>&1; then
+gsettings set org.gnome.desktop.interface accent-color "$GNOME_ACCENT_PRESET" || exit 1
+fi
+
+# Waywallen Accents watches the CSS file; never reset the Shell theme here.
+
+# 3. Live-reload running GTK3 and GTK4/Libadwaita apps without restarting them
+if [ "$LIVE_RELOAD_GTK" = "1" ] && [ "$APPLY_GTK_CSS" -eq 1 ]; then
+CUR_GTK_THEME="$(gsettings get org.gnome.desktop.interface gtk-theme 2>/dev/null || true)"
+if [ -n "$CUR_GTK_THEME" ]; then
+gsettings set org.gnome.desktop.interface gtk-theme 'Adwaita' 2>/dev/null || true
+gsettings set org.gnome.desktop.interface gtk-theme "$CUR_GTK_THEME" 2>/dev/null || true
+fi
+# shortcut: CSS reload varies by application; restart apps if colors remain stale.
+log "Triggered live CSS reload for open GTK3 and GTK4/Libadwaita windows."
+fi
+fi
+
+# ---------------------------------------------------------------
+# Wallust templates (kitty, etc.)
+# ---------------------------------------------------------------
+run_wallust_quiet() {
+if command -v setsid >/dev/null 2>&1; then
+setsid -w "$WALLUST_BIN" run -p dark "$1" </dev/null >/dev/null 2>"$WALLUST_ERR"
+else
+"$WALLUST_BIN" run -p dark "$1" </dev/null >/dev/null 2>"$WALLUST_ERR"
+fi
+}
+
+build_swatch_strip() {
+local swatches sw arr=()
+swatches="$(awk -v hp="$HP" -v sp="$SP_ADJ" -v hn="$HN" -v sn="$SN_ADJ" '
+function h2r(p,q,t){ if(t<0)t+=1; if(t>1)t-=1; if(t<1/6)return p+(q-p)*6*t; if(t<1/2)return q; if(t<2/3)return p+(q-p)*(2/3-t)*6; return p }
+function colh(h,s,l,   q,p,r,g,b){
+h+=0;s+=0;l+=0;
+if(h<0)h+=1; if(h>1)h-=1;
+if(s<0)s=0; if(s>1)s=1;
+if(l<0)l=0; if(l>1)l=1;
+if(s<=0){ r=l; g=l; b=l } else {
+q=(l<0.5)? l*(1+s) : l+s-l*s; p=2*l-q;
+r=h2r(p,q,h+1/3); g=h2r(p,q,h); b=h2r(p,q,h-1/3);
+}
+return sprintf("#%02X%02X%02X", int(r*255+0.5), int(g*255+0.5), int(b*255+0.5));
+}
+BEGIN{
+for(i=0;i<8;i++) print colh(hp, sp, 0.06+i*0.12);
+for(i=0;i<8;i++) print colh(hn, sn, 0.06+i*0.12);
+}' 2>/dev/null || true)"
+
+while IFS= read -r sw; do
+[[ "$sw" =~ ^#[0-9A-Fa-f]{6}$ ]] || continue
+arr+=(-size 32x64 "xc:$sw")
+done <<< "$swatches"
+
+[ "${#arr[@]}" -ge 8 ] || return 1
+"$MAGICK_BIN" "${arr[@]}" +append "$WSYNC" 2>/dev/null && [ -s "$WSYNC" ]
+}
+
+sync_wallust_templates() {
+[ "$WALLUST_TEMPLATES" = "1" ] || return 0
+[ "$SCHEME_OK" -eq 1 ] || return 0
+if [ -z "$WALLUST_BIN" ] || [ ! -x "$WALLUST_BIN" ]; then
+return 0
+fi
+
+local src
+build_swatch_strip || WSYNC=""
+for src in "$WSYNC" "$ANALYSIS" "$IMAGE"; do
+[ -n "$src" ] && [ -s "$src" ] || continue
+if run_wallust_quiet "$src"; then
+log "Wallust templates generated using: $(basename "$src")"
+break
+fi
+done
+}
+
+sync_wallust_templates
+
+if [ -n "$CONTENT_HASH" ]; then
+STATE_TMP="${STATE_CACHE}.tmp.$$"
+if printf '%s\n' "$CONTENT_HASH" > "$STATE_TMP" 2>/dev/null; then
+mv -f -- "$STATE_TMP" "$STATE_CACHE" 2>/dev/null || true
+chmod 600 -- "$STATE_CACHE" 2>/dev/null || true
+fi
+fi
+
+log "Done."

@@ -1,0 +1,7 @@
+{
+  "uuid": "waywallen-accents@gimas.local",
+  "name": "Waywallen Accents",
+  "description": "Reload wallpaper accent colors while preserving GNOME Shell styles and live wallpapers.",
+  "shell-version": ["49"],
+  "version": 3
+}
